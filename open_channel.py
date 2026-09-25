@@ -301,3 +301,148 @@ def supercritical_reach_length(
         right = left + increment
         total += 0.5 * (integrand(left) + integrand(right)) * increment
     return abs(total)
+
+
+def broad_crested_weir_transition(
+    discharge: float,
+    width: float,
+    weir_height: float,
+    gravity: float = GRAVITY,
+) -> dict[str, float]:
+    """Calculate ideal broad-crested-weir control depths.
+
+    The crest is assumed to be high enough to force critical flow and
+    head losses over the control are neglected.  The returned upstream
+    depth is the subcritical alternate depth and the downstream depth is
+    the supercritical alternate depth, both referenced to the original
+    channel bed.
+    """
+    if discharge <= 0.0 or width <= 0.0 or weir_height < 0.0:
+        raise ValueError("Discharge and width must be positive; weir height must be non-negative.")
+
+    section = RectangularSection(width)
+    unit_discharge = discharge / width
+    critical = (unit_discharge**2 / gravity) ** (1.0 / 3.0)
+    critical_energy = 1.5 * critical
+    required_total_energy = weir_height + critical_energy
+
+    upstream_depth = rectangular_depth_from_specific_energy(
+        discharge=discharge,
+        width=width,
+        specific_energy=required_total_energy,
+        regime="subcritical",
+        gravity=gravity,
+    )
+    downstream_depth = rectangular_depth_from_specific_energy(
+        discharge=discharge,
+        width=width,
+        specific_energy=required_total_energy,
+        regime="supercritical",
+        gravity=gravity,
+    )
+
+    return {
+        "critical_depth": critical,
+        "critical_energy_above_crest": critical_energy,
+        "required_total_energy": required_total_energy,
+        "upstream_depth": upstream_depth,
+        "downstream_depth": downstream_depth,
+        "upstream_froude": rectangular_froude(discharge, width, upstream_depth, gravity),
+        "downstream_froude": rectangular_froude(discharge, width, downstream_depth, gravity),
+    }
+
+
+def gvf_one_step_jump_distance(
+    discharge_per_width: float,
+    initial_depth: float,
+    target_depth: float,
+    roughness: float,
+    slope: float,
+    gravity: float = GRAVITY,
+) -> float:
+    """Estimate a supercritical hydraulic-jump position with one GVF step.
+
+    The gradually-varied-flow equation is evaluated at the mean depth
+    between the initial supercritical depth and the target (conjugate)
+    depth.  This gives a single-step estimate of the horizontal distance.
+    """
+    if discharge_per_width <= 0.0 or initial_depth <= 0.0 or target_depth <= 0.0:
+        raise ValueError("Discharge per width and depths must be positive.")
+    if roughness <= 0.0 or slope <= 0.0:
+        raise ValueError("Roughness and slope must be positive.")
+    if target_depth <= initial_depth:
+        raise ValueError("For this downstream supercritical profile, target_depth must exceed initial_depth.")
+
+    mean_depth = 0.5 * (initial_depth + target_depth)
+    friction_slope = (
+        roughness * discharge_per_width / mean_depth ** (5.0 / 3.0)
+    ) ** 2
+    froude_squared = discharge_per_width**2 / (gravity * mean_depth**3)
+
+    denominator = slope - friction_slope
+    numerator = 1.0 - froude_squared
+    if abs(denominator) < 1e-14:
+        raise ValueError("GVF denominator is too close to zero at the mean depth.")
+
+    dx_dy = numerator / denominator
+    delta_y = target_depth - initial_depth
+    return abs(dx_dy * delta_y)
+
+
+def abrupt_expansion_jump_depth(
+    discharge: float,
+    upstream_width: float,
+    downstream_width: float,
+    upstream_depth: float,
+    gravity: float = GRAVITY,
+) -> float:
+    """Solve the downstream depth after an abrupt rectangular expansion.
+
+    The calculation treats the expansion as a short hydraulic transition and
+    applies conservation of momentum (specific force) between the two sections.
+    Hydrostatic pressure distributions are assumed at both sections, while
+    bed-friction and the weight component over the very short transition are
+    neglected.  The physically relevant solution is the *subcritical* root
+    downstream of the expansion.
+
+    For a rectangular channel the momentum function is
+
+        M = Q^2 / (g A) + A*y/2
+
+    where A = b*y.  The downstream depth is found from M2 = M1.
+    """
+    if discharge <= 0.0:
+        raise ValueError("Discharge must be positive.")
+    if upstream_width <= 0.0 or downstream_width <= 0.0:
+        raise ValueError("Channel widths must be positive.")
+    if upstream_depth <= 0.0:
+        raise ValueError("Upstream depth must be positive.")
+    if gravity <= 0.0:
+        raise ValueError("Gravity must be positive.")
+    if downstream_width <= upstream_width:
+        raise ValueError("This function requires a downstream expansion in width.")
+
+    upstream_area = upstream_width * upstream_depth
+    upstream_momentum = (
+        discharge**2 / (gravity * upstream_area)
+        + upstream_area * upstream_depth / 2.0
+    )
+
+    downstream_section = RectangularSection(downstream_width)
+    downstream_critical = critical_depth(
+        downstream_section, discharge, gravity
+    )
+
+    def momentum_difference(depth: float) -> float:
+        area = downstream_width * depth
+        momentum = discharge**2 / (gravity * area) + area * depth / 2.0
+        return momentum - upstream_momentum
+
+    # The larger root is the subcritical downstream solution.  Start at the
+    # critical depth and expand the upper bracket until the root is enclosed.
+    lower = downstream_critical
+    upper = max(2.0 * lower, upstream_depth)
+    while momentum_difference(upper) < 0.0:
+        upper *= 2.0
+
+    return _bisect(momentum_difference, lower, upper)
