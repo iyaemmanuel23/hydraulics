@@ -15,11 +15,11 @@ from open_channel import (
 )
 
 
-def solve() -> dict[str, float]:
-    width = 0.8
-    discharge = 0.9
-    downstream_depth = 0.25
-
+def solve(
+    width: float = 0.8,
+    discharge: float = 0.9,
+    downstream_depth: float = 0.25,
+) -> dict[str, float]:
     total_head = rectangular_specific_energy(discharge, width, downstream_depth)
     upstream_depth = rectangular_depth_from_specific_energy(
         discharge,
@@ -43,8 +43,27 @@ def solve() -> dict[str, float]:
     }
 
 
-if __name__ == "__main__":
-    for name, value in solve().items():
+def _input_float(prompt: str, default: float) -> float:
+    value = input(f"{prompt} [{default}]: ").strip()
+    return default if value == "" else float(value)
+
+
+def main() -> None:
+    print("Question 15: flow controlled by an undershot sluice gate")
+    print("Press Enter to use the value stated in the question.\n")
+
+    width = _input_float("Channel width (m)", 0.8)
+    discharge = _input_float("Discharge Q (m^3/s)", 0.9)
+    downstream_depth = _input_float("Downstream depth (m)", 0.25)
+
+    results = solve(
+        width=width,
+        discharge=discharge,
+        downstream_depth=downstream_depth,
+    )
+
+    print("\n--- Results ---")
+    for name, value in results.items():
         unit = (
             "N"
             if name == "gate_force"
@@ -55,3 +74,7 @@ if __name__ == "__main__":
             )
         )
         print(f"{name}: {value:.6f} {unit}".rstrip())
+
+
+if __name__ == "__main__":
+    main()
